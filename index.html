@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>架空世界地図ペインター</title>
+  <style>
+    :root {
+      --bg-dark: #18181c;
+      --panel-bg: #26262e;
+      --accent: #4f46e5;
+      --accent-hover: #4338ca;
+      --border: #3f3f4e;
+      --text: #f3f4f6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      background-color: var(--bg-dark);
+      color: var(--text);
+      overflow: hidden;
+    }
+
+    header {
+      padding: 10px 20px;
+      background: var(--panel-bg);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      border-bottom: 1px solid var(--border);
+      z-index: 10;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .tool-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+    }
+
+    /* プリセットパレット */
+    .palette {
+      display: flex;
+      gap: 6px;
+    }
+    .color-swatch {
+      width: 24px;
+      height: 24px;
+      border-radius: 4px;
+      border: 2px solid transparent;
+      cursor: pointer;
+      transition: transform 0.1s;
+    }
+    .color-swatch:hover {
+      transform: scale(1.15);
+    }
+    .color-swatch.active {
+      border-color: #fff;
+    }
+
+    input[type="color"] {
+      width: 32px;
+      height: 32px;
+      border: none;
+      border-radius: 4px;
+      background: none;
+      cursor: pointer;
+    }
+
+    button {
+      background: var(--accent);
+      color: white;
+      border: none;
+      padding: 8px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      transition: background 0.2s;
+    }
+    button:hover { background: var(--accent-hover); }
+    button.secondary {
+      background: #4b5563;
+    }
+    button.secondary:hover { background: #374151; }
+
+    #status {
+      font-size: 12px;
+      color: #9ca3af;
+    }
+
+    /* 地図表示エリア */
+    .viewport {
+      flex: 1;
+      overflow: auto;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 30px;
+      background: radial-gradient(circle at center, #23232b 0%, #111115 100%);
+    }
+
+    .canvas-container {
+      position: relative;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
+      background: #000;
+    }
+
+    #mapCanvas {
+      display: block;
+      /* 画面表示用サイズ：2000x4000の比率（1:2）を維持しながら収める */
+      width: 600px;
+      height: 1200px;
+      cursor: crosshair;
+    }
+
+    /* ローカルfile:///のCORS警告モーダル */
+    #corsNotice {
+      display: none;
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      max-width: 420px;
+      padding: 16px;
+      background: #ef4444;
+      color: white;
+      border-radius: 8px;
+      font-size: 13px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+      z-index: 100;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="toolbar">
+    <div class="tool-item">
+      <label>選択色:</label>
+      <input type="color" id="colorPicker" value="#e63946">
+    </div>
+    
+    <div class="palette" id="presetPalette"></div>
+
+    <div class="tool-item">
+      <button id="clearBtn" class="secondary">塗り全リセット</button>
+      <button id="exportBtn">高画質PNG保存 (2000×4000)</button>
+    </div>
+  </div>
+
+  <div id="status">初期化中...</div>
+</header>
+
+<div class="viewport">
+  <div class="canvas-container">
+    <canvas id="mapCanvas" width="2000" height="4000"></canvas>
+  </div>
+</div>
+
+<div id="corsNotice">
+  <strong>⚠️ ローカル制限エラー</strong><br>
+  ブラウザのセキュリティ設定により、<code>file:///</code> からの直接実行では画像のピクセル判定がブロックされる場合があります。<br>
+  VS Codeの「Live Server」拡張機能等で開くか、GitHub Pagesで表示してください。
+</div>
+
+<script>
+// --- 設定：アセットパスと国一覧 ---
+const CONFIG = {
+  baseImage: './assets/base.png',
+  overlayImage: './assets/overlay.png',
+  countries: [
+    { id: 'NovaOccidentia', name: 'Nova Occidentia', src: './assets/countries/country_NovaOccidentia.png' },
+    { id: 'NovaNordica',    name: 'Nova Nordica',    src: './assets/countries/country_NovaNordica.png' },
+    { id: 'NovaOrkia',      name: 'Nova Orkia',      src: './assets/countries/country_NovaOrkia.png' }
+  ],
+  presetColors: ['#e63946', '#f4a261', '#e9c46a', '#2a9d8f', '#264653', '#457b9d', '#9b5de5', '#ffffff']
+};
+
+const canvas = document.getElementById('mapCanvas');
+const ctx = canvas.getContext('2d');
+const colorPicker = document.getElementById('colorPicker');
+const statusText = document.getElementById('status');
+const corsNotice = document.getElementById('corsNotice');
+
+// 状態管理
+const state = {
+  countryColors: {}, 
+  countryMasks: {},  // { [id]: { img, hitCtx } }
+  baseImg: null,
+  overlayImg: null
+};
+
+// プリセットパレットの構築
+const paletteContainer = document.getElementById('presetPalette');
+CONFIG.presetColors.forEach(color => {
+  const swatch = document.createElement('div');
+  swatch.className = 'color-swatch';
+  swatch.style.backgroundColor = color;
+  swatch.addEventListener('click', () => {
+    colorPicker.value = color;
+    document.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('active'));
+    swatch.classList.add('active');
+  });
+  paletteContainer.appendChild(swatch);
+});
+
+// 画像読み込みヘルパー
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error(`読み込み失敗: ${src}`));
+    img.src = src;
+  });
+}
+
+// 初期化
+async function init() {
+  try {
+    statusText.innerText = "地図データを読み込み中...";
+
+    // 1. ベース・境界線画像の読み込み
+    state.baseImg = await loadImage(CONFIG.baseImage);
+    state.overlayImg = await loadImage(CONFIG.overlayImage);
+
+    // 2. 各国の透過PNGを読み込み & オフスクリーンCanvasを作成
+    for (const c of CONFIG.countries) {
+      const img = await loadImage(c.src);
+      
+      const hitCanvas = document.createElement('canvas');
+      hitCanvas.width = 2000;
+      hitCanvas.height = 4000;
+      const hitCtx = hitCanvas.getContext('2d', { willReadFrequently: true });
+      hitCtx.drawImage(img, 0, 0);
+
+      state.countryMasks[c.id] = {
+        img: img,
+        hitCtx: hitCtx
+      };
+    }
+
+    statusText.innerText = `準備完了 (登録国家: ${CONFIG.countries.length}カ国)`;
+    render();
+  } catch (err) {
+    statusText.innerText = "エラー: 読み込みに失敗しました";
+    console.error(err);
+    if (window.location.protocol === 'file:') {
+      corsNotice.style.display = 'block';
+    }
+  }
+}
+
+// 描画処理（下から順に合成）
+function render() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // 1. 最下層：背景
+  if (state.baseImg) {
+    ctx.drawImage(state.baseImg, 0, 0);
+  }
+
+  // 2. 中間層：各国の塗りつぶし
+  // 作業用オフスクリーンCanvas（再利用）
+  const tempCanvas = document.createElement('canvas');
+  tempCanvas.width = canvas.width;
+  tempCanvas.height = canvas.height;
+  const tCtx = tempCanvas.getContext('2d');
+
+  for (const c of CONFIG.countries) {
+    const color = state.countryColors[c.id];
+    if (color && state.countryMasks[c.id]) {
+      const mask = state.countryMasks[c.id].img;
+
+      tCtx.clearRect(0, 0, tempCanvas.width, tempCanvas.height);
+      tCtx.drawImage(mask, 0, 0);
+
+      // マスクの不透明部分のみを指定色で染める（source-in）
+      tCtx.globalCompositeOperation = 'source-in';
+      tCtx.fillStyle = color;
+      tCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+      tCtx.globalCompositeOperation = 'source-over';
+
+      // 本番Canvasに転写
+      ctx.drawImage(tempCanvas, 0, 0);
+    }
+  }
+
+  // 3. 最上層：国境・海岸線
+  if (state.overlayImg) {
+    ctx.drawImage(state.overlayImg, 0, 0);
+  }
+}
+
+// クリック判定
+canvas.addEventListener('click', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  
+  // 表示サイズ（CSS）から原寸（2000x4000）へのスケール変換
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+
+  const x = Math.floor((e.clientX - rect.left) * scaleX);
+  const y = Math.floor((e.clientY - rect.top) * scaleY);
+
+  if (x < 0 || x >= canvas.width || y < 0 || y >= canvas.height) return;
+
+  let clickedCountry = null;
+
+  try {
+    // 各国の透過マスクを判定（逆順にチェックして手前の国を優先）
+    for (let i = CONFIG.countries.length - 1; i >= 0; i--) {
+      const c = CONFIG.countries[i];
+      const maskData = state.countryMasks[c.id];
+      if (!maskData) continue;
+
+      // 該当座標のアルファ値（不透明度）を取得
+      const pixel = maskData.hitCtx.getImageData(x, y, 1, 1).data;
+      if (pixel[3] > 0) { // 不透明部分をクリックしたか
+        clickedCountry = c;
+        break;
+      }
+    }
+  } catch (err) {
+    console.error("ピクセル判定エラー (CORS制約):", err);
+    corsNotice.style.display = 'block';
+    return;
+  }
+
+  if (clickedCountry) {
+    const targetColor = colorPicker.value;
+    // 既に同じ色で塗られている場合は消去（トグル動作）
+    if (state.countryColors[clickedCountry.id] === targetColor) {
+      delete state.countryColors[clickedCountry.id];
+      statusText.innerText = `${clickedCountry.name} の塗りを解除`;
+    } else {
+      state.countryColors[clickedCountry.id] = targetColor;
+      statusText.innerText = `${clickedCountry.name} を ${targetColor} で塗りました`;
+    }
+    render();
+  }
+});
+
+// リセット処理
+document.getElementById('clearBtn').addEventListener('click', () => {
+  state.countryColors = {};
+  render();
+  statusText.innerText = "すべての塗りをリセットしました";
+});
+
+// 原寸（2000×4000）PNG保存
+document.getElementById('exportBtn').addEventListener('click', () => {
+  try {
+    const link = document.createElement('a');
+    link.download = `world_map_${Date.now()}.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+  } catch (err) {
+    alert("ローカルセキュリティ制約のため保存できませんでした。ローカルサーバー経由で実行してください。");
+  }
+});
+
+init();
+</script>
+</body>
+</html>
